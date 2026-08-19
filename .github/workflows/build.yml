@@ -2,3 +2,119 @@ name: 编译固件
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: "编译目标平台"
+        required: true
+        type: choice
+        options:
+          - rk3399
+          - rk3588-mainline
+          - s905
+          - s922x
+          - sm8250
+          - t527
+      device:
+        description: "设备镜像子目录名（留空则上传该平台全部设备镜像）"
+        required: false
+        type: string
+        default: ""
+      branch:
+        description: "源码分支"
+        required: false
+        type: string
+        default: "master"
+      parallel:
+        description: "启用并行编译（更快，默认开启）"
+        required: false
+        type: boolean
+        default: true
+
+# 同一平台同时只允许一个构建任务，避免缓存互相覆盖
+concurrency:
+  group: batocera-build-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: 环境检查
+        run: |
+          df -h /
+          free -h
+          nproc
+          make --version | head -n1
+          docker --version
+
+      # 清理 Runner 预装的工具释放磁盘空间（编译 dl + output 需要较多空间）
+      - name: 释放磁盘空间
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/powershell /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      # 注意：子模块（buildroot 等）必须完整检出，否则无法编译
+      - name: 检出源码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 1
+
+      # 子模块做浅克隆，减小检出体积（buildroot 仓库较大）
+      - name: 浅克隆子模块
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 1
+
+      # 缓存已下载的源码包（dl/），首次编译后再次编译可跳过下载
+      - name: 恢复源码包缓存
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: batocera-dl-${{ inputs.target }}-${{ github.run_id }}
+          restore-keys: |
+            batocera-dl-${{ inputs.target }}-
+
+      # 缓存编译缓存（ccache），增量编译大幅提速
+      - name: 恢复 ccache 缓存
+        uses: actions/cache@v4
+        with:
+          path: buildroot-ccache
+          key: batocera-ccache-${{ inputs.target }}-${{ github.run_id }}
+          restore-keys: |
+            batocera-ccache-${{ inputs.target }}-
+
+      # 构建 Docker 编译镜像（对应仓库 README 的 docker build 步骤）
+      - name: 构建 Docker 编译镜像
+        run: docker build -t batoceralinux/batocera.linux-build:latest docker/
+
+      # 生成镜像可用标记，否则 make 会尝试拉取远程镜像
+      - name: 标记 Docker 镜像可用
+        run: touch .ba-docker-image-available
+
+      # 先下载所有软件包源码（make <target>-source），
+      # 与缓存配合可避免编译过程中反复下载
+      - name: 下载所有源码包
+        run: make ${{ inputs.target }}-source BATCH_MODE=1
+
+      - name: 编译固件
+        run: |
+          if [ "${{ inputs.parallel }}" = "true" ]; then
+            make ${{ inputs.target }}-build BATCH_MODE=1 PARALLEL_BUILD=1
+          else
+            make ${{ inputs.target }}-build BATCH_MODE=1
+          fi
+
+      - name: 列出生成的镜像
+        run: ls -lh "output/${{ inputs.target }}/images/batocera/images/"
+
+      # 上传固件为 Actions Artifact（可在运行页底部下载，保留 30 天）
+      - name: 上传固件
+        uses: actions/upload-artifact@v4
+        with:
+          name: batocera-${{ inputs.target }}-${{ inputs.device != '' && inputs.device || 'all' }}-${{ github.run_number }}
+          path: output/${{ inputs.target }}/images/batocera/images/${{ inputs.device }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
