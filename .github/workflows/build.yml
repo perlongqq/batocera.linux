@@ -66,7 +66,28 @@ jobs:
         run: |
           git submodule sync --recursive
           git submodule update --init --recursive --depth 1
-
+          
+      # Kodi 官方镜像会定期删除旧版本语言包（如 it_it-11.0.106 已被移除，
+      # 且上游源码仍钉在该版本），此步骤自动将失效的语言包改为镜像上的最新版本
+      - name: 修正失效的 Kodi 语言包版本
+        run: |
+          for mk in package/batocera/kodi/kodi21-resource-language-*/*.mk; do
+            lang=$(basename "$mk" .mk | sed 's/kodi21_resource_language_//')
+            ver=$(grep -m1 "VERSION = " "$mk" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+            [ -z "$ver" ] && continue
+            url="https://mirrors.kodi.tv/addons/omega/resource.language.$lang/resource.language.$lang-$ver.zip"
+            code=$(curl -s -o /dev/null -w "%{http_code}" -I "$url")
+            if [ "$code" != "200" ] && [ "$code" != "302" ]; then
+              new=$(curl -s "https://mirrors.kodi.tv/addons/omega/resource.language.$lang/" \
+                    | grep -oE "resource\.language\.$lang-[0-9.]+\.zip" \
+                    | sort -uV | tail -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+              if [ -n "$new" ] && [ "$new" != "$ver" ]; then
+                echo "语言包 $lang 版本 $ver 已失效( HTTP $code )，修正为 $new"
+                sed -i "s/$ver/$new/" "$mk"
+              fi
+            fi
+          done
+          
       # 缓存已下载的源码包（dl/），首次编译后再次编译可跳过下载
       - name: 恢复源码包缓存
         uses: actions/cache@v4
