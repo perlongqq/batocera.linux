@@ -123,6 +123,14 @@ jobs:
           curl -L --fail --retry 10 --retry-all-errors --retry-delay 15 -C - \
             -o dl/alllinuxfirmwares/linux-firmware-20260519.tar.gz \
             https://www.kernel.org/pub/linux/kernel/firmware/linux-firmware-20260519.tar.gz
+
+      - name: 预下载 libtool 源码包
+        run: |
+          mkdir -p dl/libtool
+          curl -L --fail --retry 10 --retry-all-errors --retry-delay 15 -C - \
+            -o dl/libtool/libtool-2.4.7.tar.xz \
+            https://ftp.gnu.org/gnu/libtool/libtool-2.4.7.tar.xz
+            
       # 与缓存配合可避免编译过程中反复下载；失败自动重试
       
       - name: 下载所有源码包
